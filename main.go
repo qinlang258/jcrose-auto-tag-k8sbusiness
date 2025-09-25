@@ -84,7 +84,7 @@ func main() {
 		"quote-usoption-zfb",
 	}
 
-	other := []string{}
+	other := "other"
 
 	var kubeconfig string
 	if home := homedir.HomeDir(); home != "" {
@@ -125,13 +125,18 @@ func main() {
 }
 
 // updateBusiness 更新 Deployment/STS、对应 Pod 和 Service 的 business 标签
-func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, name string, labelsMap map[string]string, chief, quote []string, other []string) {
+func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, name string, labelsMap map[string]string, chief, quote []string, other string) {
 	if labelsMap == nil {
 		labelsMap = map[string]string{}
 	}
 
+	// 只处理已有 business 标签的对象
 	old := labelsMap["business"]
-	newBusiness := other
+	if old == "" {
+		return
+	}
+
+	newBusiness := other // 默认 other
 	if contains(chief, name) {
 		newBusiness = "chief"
 	} else if contains(quote, name) {
@@ -142,10 +147,9 @@ func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, na
 		return
 	}
 
-	// 更新 Deployment/STS
 	labelsMap["business"] = newBusiness
 
-	// 先尝试更新 Deployment
+	// 更新 Deployment
 	deploy, err := clientset.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
 		deploy.Labels = labelsMap
@@ -153,7 +157,7 @@ func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, na
 		fmt.Printf("Updated Deployment %s/%s business=%s\n", ns, name, newBusiness)
 	}
 
-	// 再尝试更新 StatefulSet
+	// 更新 StatefulSet
 	sts, err := clientset.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
 		sts.Labels = labelsMap
@@ -179,7 +183,6 @@ func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, na
 		if svc.Labels == nil {
 			svc.Labels = map[string]string{}
 		}
-		// 判断 service selector 是否匹配
 		if selector.Matches(labels.Set(svc.Spec.Selector)) {
 			svc.Labels["business"] = newBusiness
 			clientset.CoreV1().Services(ns).Update(ctx, &svc, metav1.UpdateOptions{})
