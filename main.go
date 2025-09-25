@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"path/filepath"
-	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -14,7 +14,16 @@ import (
 )
 
 func main() {
-	// 构建 kubeconfig 路径
+	// 读取参数
+	business := flag.String("business", "", "business label value (e.g. devops)")
+	namespace := flag.String("namespace", "", "namespace to query (default: all)")
+	flag.Parse()
+
+	if *business == "" {
+		log.Fatal("必须指定 --business 参数，例如: --business=devops")
+	}
+
+	// kubeconfig 路径
 	var kubeconfig string
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = filepath.Join(home, ".kube", "config")
@@ -23,53 +32,42 @@ func main() {
 	// 创建配置
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		log.Fatalf("Error building kubeconfig: %v", err)
+		log.Fatalf("构建 kubeconfig 失败: %v", err)
 	}
 
 	// 创建客户端
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Fatalf("Error creating Kubernetes client: %v", err)
+		log.Fatalf("创建 Kubernetes client 失败: %v", err)
 	}
 
 	ctx := context.Background()
+	labelSelector := fmt.Sprintf("business=%s", *business)
 
-	// 获取所有 namespace
-	namespaces, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	// 查询 Deployments
+	deployments, err := clientset.AppsV1().Deployments(*namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
 	if err != nil {
-		log.Fatalf("Error listing namespaces: %v", err)
+		log.Fatalf("获取 Deployments 失败: %v", err)
 	}
 
-	fmt.Println("查找包含 'business' 的服务:")
-	fmt.Println("================================")
+	// 查询 StatefulSets
+	statefulsets, err := clientset.AppsV1().StatefulSets(*namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		log.Fatalf("获取 StatefulSets 失败: %v", err)
+	}
 
-	for _, ns := range namespaces.Items {
-		nsName := ns.Name
+	// 打印结果
+	fmt.Println("=== Deployments ===")
+	for _, d := range deployments.Items {
+		fmt.Printf("%s/%s\n", d.Namespace, d.Name)
+	}
 
-		// 查找 Deployments
-		deployments, err := clientset.AppsV1().Deployments(nsName).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Printf("Error listing deployments in namespace %s: %v", nsName, err)
-			continue
-		}
-
-		for _, deploy := range deployments.Items {
-			if strings.Contains(deploy.Name, "business") {
-				fmt.Printf("Deployment: %s/%s\n", nsName, deploy.Name)
-			}
-		}
-
-		// 查找 StatefulSets
-		statefulsets, err := clientset.AppsV1().StatefulSets(nsName).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Printf("Error listing statefulsets in namespace %s: %v", nsName, err)
-			continue
-		}
-
-		for _, sts := range statefulsets.Items {
-			if strings.Contains(sts.Name, "business") {
-				fmt.Printf("StatefulSet: %s/%s\n", nsName, sts.Name)
-			}
-		}
+	fmt.Println("=== StatefulSets ===")
+	for _, s := range statefulsets.Items {
+		fmt.Printf("%s/%s\n", s.Namespace, s.Name)
 	}
 }
