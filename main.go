@@ -84,7 +84,7 @@ func main() {
 		"quote-usoption-zfb",
 	}
 
-	other := ""
+	other := []string{}
 
 	var kubeconfig string
 	if home := homedir.HomeDir(); home != "" {
@@ -125,11 +125,12 @@ func main() {
 }
 
 // updateBusiness 更新 Deployment/STS、对应 Pod 和 Service 的 business 标签
-func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, name string, labelsMap map[string]string, chief, quote []string, other string) {
+func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, name string, labelsMap map[string]string, chief, quote []string, other []string) {
 	if labelsMap == nil {
 		labelsMap = map[string]string{}
 	}
 
+	old := labelsMap["business"]
 	newBusiness := other
 	if contains(chief, name) {
 		newBusiness = "chief"
@@ -137,50 +138,52 @@ func updateBusiness(ctx context.Context, clientset *kubernetes.Clientset, ns, na
 		newBusiness = "quote"
 	}
 
-	// 如果原本 business 值为空或者不等于 newBusiness，就更新
-	old := labelsMap["business"]
-	if old != newBusiness {
-		labelsMap["business"] = newBusiness
+	if old == newBusiness {
+		return
+	}
 
-		// 更新 Deployment
-		deploy, err := clientset.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
-		if err == nil {
-			deploy.Labels = labelsMap
-			clientset.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
-			fmt.Printf("Updated Deployment %s/%s business=%s\n", ns, name, newBusiness)
+	// 更新 Deployment/STS
+	labelsMap["business"] = newBusiness
+
+	// 先尝试更新 Deployment
+	deploy, err := clientset.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		deploy.Labels = labelsMap
+		clientset.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
+		fmt.Printf("Updated Deployment %s/%s business=%s\n", ns, name, newBusiness)
+	}
+
+	// 再尝试更新 StatefulSet
+	sts, err := clientset.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		sts.Labels = labelsMap
+		clientset.AppsV1().StatefulSets(ns).Update(ctx, sts, metav1.UpdateOptions{})
+		fmt.Printf("Updated StatefulSet %s/%s business=%s\n", ns, name, newBusiness)
+	}
+
+	// 更新 Pod
+	selector := labels.SelectorFromSet(labelsMap)
+	pods, _ := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	for _, pod := range pods.Items {
+		if pod.Labels == nil {
+			pod.Labels = map[string]string{}
 		}
+		pod.Labels["business"] = newBusiness
+		clientset.CoreV1().Pods(ns).Update(ctx, &pod, metav1.UpdateOptions{})
+		fmt.Printf("Updated Pod %s/%s business=%s\n", ns, pod.Name, newBusiness)
+	}
 
-		// 更新 StatefulSet
-		sts, err := clientset.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
-		if err == nil {
-			sts.Labels = labelsMap
-			clientset.AppsV1().StatefulSets(ns).Update(ctx, sts, metav1.UpdateOptions{})
-			fmt.Printf("Updated StatefulSet %s/%s business=%s\n", ns, name, newBusiness)
+	// 更新 Service
+	services, _ := clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+	for _, svc := range services.Items {
+		if svc.Labels == nil {
+			svc.Labels = map[string]string{}
 		}
-
-		// 更新 Pod
-		selector := labels.Set(labelsMap)
-		pods, _ := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: labels.SelectorFromSet(selector).String()})
-		for _, pod := range pods.Items {
-			if pod.Labels == nil {
-				pod.Labels = map[string]string{}
-			}
-			pod.Labels["business"] = newBusiness
-			clientset.CoreV1().Pods(ns).Update(ctx, &pod, metav1.UpdateOptions{})
-			fmt.Printf("Updated Pod %s/%s business=%s\n", ns, pod.Name, newBusiness)
-		}
-
-		// 更新 Service
-		services, _ := clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
-		for _, svc := range services.Items {
-			if svc.Labels == nil {
-				svc.Labels = map[string]string{}
-			}
-			if labels.SelectorFromSet(svc.Spec.Selector).Matches(labels.Set(labelsMap)) {
-				svc.Labels["business"] = newBusiness
-				clientset.CoreV1().Services(ns).Update(ctx, &svc, metav1.UpdateOptions{})
-				fmt.Printf("Updated Service %s/%s business=%s\n", ns, svc.Name, newBusiness)
-			}
+		// 判断 service selector 是否匹配
+		if selector.Matches(labels.Set(svc.Spec.Selector)) {
+			svc.Labels["business"] = newBusiness
+			clientset.CoreV1().Services(ns).Update(ctx, &svc, metav1.UpdateOptions{})
+			fmt.Printf("Updated Service %s/%s business=%s\n", ns, svc.Name, newBusiness)
 		}
 	}
 }
